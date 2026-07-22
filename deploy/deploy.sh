@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SSH_HOST="root@118.196.120.182"
-REMOTE_DIR="/opt/xiaozhi-server"
+REMOTE_DIR="/srv/xiaozhi-server"
 FILES="-f docker-compose_all.yml -f docker-compose.override.yml"
 ACTION="${1:-up}"
 

@@ -1,18 +1,17 @@
-# 本地开发热同步用的 override（追加到 docker-compose_all.yml 之上）
+# 本地开发热同步用的 override（追加到 docker-compose_all.yml 之上）—— 版本化参考副本
+# 生产实际运行的在 server /srv/xiaozhi-server/docker-compose.override.yml
 #
 # 设计原则：外科式代码挂载。
 #   只把「会变的 Python 代码」子路径 bind-mount 进容器，
 #   镜像自带的运行时资产（models/ 里的 VAD onnx、SenseVoice 配置、music/、
 #   pip 依赖）保持不动，绝不被 host 目录 shadow。
-#   这样 rsync --delete 同步代码时不会误删模型，重建镜像也无需重灌资产。
 #
-# 唯一的大模型 model.pt(约893MB) 不在镜像内，由 base compose 单独从 host 挂载。
-#
-# 改完本地代码后执行 deploy/sync-python.sh 即可 rsync + restart 秒级生效。
+# src 为软链 -> repo/main/xiaozhi-server（git clone 自 origin/Smarking）。
+# 代码更新：git push origin main → deploy/pull.sh（server git pull + restart，秒级）。
+# 大模型 model.pt(893M) 由 base compose 从共享路径 /data/models 挂载。
 services:
   xiaozhi-esp32-server:
-    # 显式指向 rebuild-server.sh 产出的本地镜像；同时作为安全阀：
-    # rebuild 脚本检测到本行即跳过其 image-sed，避免误改下方 jaeger 的 image 行。
+    # 指向 rebuild-server.sh 产出的本地镜像（基于 server_latest + requirements.txt）
     image: xiaozhi-esp32-server:server_local
     volumes:
       - ./src/app.py:/opt/xiaozhi-esp32-server/app.py
@@ -21,9 +20,8 @@ services:
       - ./src/config:/opt/xiaozhi-esp32-server/config
       - ./src/agent-base-prompt.txt:/opt/xiaozhi-esp32-server/agent-base-prompt.txt
       - ./src/mcp_server_settings.json:/opt/xiaozhi-esp32-server/mcp_server_settings.json
-      # 语音评测数据集落盘：直挂 ECS 数据盘 /data（不随容器/镜像生命周期），
-      # 容器内路径与 VOICE_DATASET_DIR 一致，recreate/重建镜像都不丢。
-      - /data/voice_sessions:/data/voice_sessions
+      # 语音评测数据集落盘：数据盘 /data/xiaozhi-server/voice_sessions（服务私有）
+      - /data/xiaozhi-server/voice_sessions:/data/voice_sessions
     # 可观测开关：默认开启，trace 经 OTLP/HTTP 发往同网 jaeger:4318。
     # 关闭时把 TELEMETRY_ENABLED 改 false 即可（代码全链路降级为 no-op）。
     environment:
@@ -51,4 +49,3 @@ services:
     ports:
       - "16686:16686"   # Jaeger UI
       - "4318:4318"     # OTLP/HTTP 采集
-

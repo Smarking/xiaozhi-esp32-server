@@ -4,38 +4,43 @@
 
 ## 环境事实
 - 目标机器：火山 ECS(cn-shanghai)，公网 `118.196.120.182`，Ubuntu 24.04 x86_64，4C/8G。
-- 磁盘：系统盘 `/dev/vda` 40G(已用 84%，偏紧)；**数据盘 `/dev/vdb` 10G → ext4(label `xzdata`)挂 `/data`**，fstab 用 UUID `0fbd3494-6e3e-4dc3-b735-9206cfa15210` + `noatime` 持久化，`mount -a` 已验证重启安全。
-- 部署目录：ECS 上 `/opt/xiaozhi-server`；本地 docker context 名 `ecs`(`ssh://root@...`)。
-- **服务端源码 git 仓库**：`/data/xiaozhi-src`(数据盘)，`/opt/xiaozhi-server/src` 是指向它的软链。容器 bind-mount 与 `sync-python.sh` 白名单路径不变(经软链解析到数据盘)。仓库为服务端**一等源头**：可在服务端直接 commit/回滚，本地推送前后均自动落 git 快照。
-- 部署形态：4 容器全链路——server(8000/8003)、web(manager-api+manager-web, 8002)、db(mysql)、redis；8000/8002/8003 公网可达已验证(HTTP 200)。
+- 磁盘：系统盘 `/dev/vda` 40G(清冗余后约 46%，docker 镜像/容器在此)；**数据盘 `/dev/vdb` 10G → ext4(label `xzdata`)挂 `/data`**(重资产)，fstab 用 UUID `0fbd3494-6e3e-4dc3-b735-9206cfa15210` + `noatime` 持久化。
+- **目录布局（多服务就绪，2026-07 重构）**：项目根 `/srv/<service>/`；共享模型 `/data/models/`；服务私有重资产 `/data/<service>/`。
+  - xiaozhi：`/srv/xiaozhi-server/`(compose + `repo/`(git clone origin) + `src→repo/main/xiaozhi-server` 软链 + `data/`密钥 + `uploadfile/`)；重资产在 `/data/xiaozhi-server/`(mysql、voice_sessions)、`/data/models/`(共享 model.pt)。
+- **源码管理（2026-07 重构：rsync 双源头 → git 单一源头）**：唯一源头 = GitHub `origin`(`Smarking/xiaozhi-esp32-server`，你的 fork)，上游 `xinnan-tech` 降级为 `upstream`。server `/srv/xiaozhi-server/repo` 是 origin 的 checkout，`git pull` 更新。**不再有 rsync、不再有 server 端独立 git 仓**。
+- 部署形态：5 容器全链路——server(8000/8003)、web(manager-api+manager-web, 8002)、db(mysql)、redis、jaeger(可观测)；8000/8002/8003 公网可达已验证(HTTP 200/404)。
 - 访问地址：智控台 `:8002`；设备 WS `ws://.../xiaozhi/v1/`；OTA `http://.../xiaozhi/ota/`。
 
 ## 硬约束
 - 安全组：8000(WS 设备接入)、8003(视觉分析)公网开放；8002(智控台)必须仅限用户出口 IP(`/32`)访问。
 - 容器通信：`data/.config.yaml` 的 `manager-api.url` 必须用内部容器名 `http://xiaozhi-esp32-server-web:8002/xiaozhi`，不能用 127.0.0.1。
-- 挂载：禁止挂整个 `./src` 到容器工作目录，必须外科式挂载代码子路径，保护镜像内置 `models/` 资产。
-- 版本管理：外部 `.gitdir` 目录含完整历史与分支，不得删除或与源码脱离，否则工作区失效。
-- 数据盘边界：`/data` 是持久数据盘(git 仓库、后续 ASR 音频等)，**不随容器/镜像生命周期**；`/opt/xiaozhi-server/src` 软链指向 `/data/xiaozhi-src`，动软链或数据盘挂载前必须先停容器并确认路径解析。
+- 挂载：禁止挂整个 `./src` 到容器工作目录，必须外科式挂载代码子路径（经 `src→repo/main/xiaozhi-server` 软链），保护镜像内置 `models/` 资产。
+- 版本管理：`/srv/xiaozhi-server/repo` 是 origin(Smarking) 的标准 git checkout，`.git` 在工作区内；唯一源头是 GitHub，server 只 pull 不自定义提交。
+- 数据盘边界：`/data` 是持久数据盘(共享模型 `/data/models`、各服务重资产 `/data/<service>/`)，**不随容器/镜像生命周期**；`/srv/xiaozhi-server/src` 软链指向 `repo/main/xiaozhi-server`，动软链前必须先停容器并确认路径解析。
 
-## 源码纪律（2026-07 变更：本地唯一源头 → 服务端仓库一等源头）
-- **旧纪律(已废止)**：「本地=唯一源头，ECS=纯运行时」，服务端不留 git、改动靠本地单向 rsync `--delete` 覆盖。痛点：服务端上任何手改会被下次 sync 静默吞掉、无历史无回滚。
-- **新纪律**：服务端 `/data/xiaozhi-src` 是**可提交、可回滚的一等 git 源头**。两端改动都进 git：
-  - `sync-python.sh` 四段式：①推送前先 `git commit` 服务端未提交改动(防覆盖丢失)→ ②白名单 rsync(`--delete` 只作用代码子树，`.git` 在工作区根永不被删)→ ③推送后 `git commit` 记录「本地上线」快照 → ④restart。
-  - 服务端可直接改代码并 `git commit`；下次本地 sync 会先把它快照进历史再覆盖，改动永不丢、随时 `git show <snapshot>` 找回。
-  - 仓库 owner 必须 root(避免 rsync 带来的 UID 501 触发 git `safe.directory` 拒写)；已加 `safe.directory /data/xiaozhi-src`。
+## 源码纪律（2026-07 重构：rsync 双源头 → git 单一源头）
+- **演进**：①「本地=唯一源头，ECS=纯运行时」rsync 覆盖(无历史) → ②「服务端 `/data/xiaozhi-src` 一等 git 源头」rsync+快照(双源头仍发散) → ③**当前：GitHub origin(Smarking) 唯一源头，两端都从它拉取**。
+- **当前纪律**：
+  - 唯一源头 = GitHub `origin`(你的 fork)，上游 `xinnan-tech` = `upstream`(只拉更新)。本地 `git push origin main`，server `/srv/xiaozhi-server/repo` `git pull`。
+  - 代码上线 = `deploy/pull.sh`：server `git pull --ff-only` + `docker restart`，秒级，不重建镜像。**rsync 已退役，`sync-python.sh` 已删**。
+  - 改依赖 = `deploy/rebuild-server.sh`：server 先 `git pull`，再从 repo 的 `requirements.txt` 增量重建镜像。
+  - 回滚 = server `git checkout <tag>` + restart，干净。
+  - server 端只 pull 不自定义提交（应急改码也应本地改→push→pull，保持单一源头）。
+- **首次 clone 坑**：ECS 国内直连 GitHub 拉对象慢（~25KB/s，195M 全历史要 30min+）。解法=本地 Mac 已有 repo，`rsync -az --no-o --no-g` 整仓到 ECS `/srv/xiaozhi-server/repo`，再 `git reset --hard HEAD` 修 macOS NFD→Linux NFC 的中文文件名问题。之后日常 `git pull` 只拉 delta，秒级。
+- 仓库 owner root（rsync 用 `--no-o --no-g` 落成 root:root，避开 UID 501 的 `safe.directory` 拒写）。
 
 ## 三种推送姿势（结论）
-- A 改 Python 代码 → `deploy/sync-python.sh`：服务端快照 + 白名单 rsync + 上线快照 + 容器 restart，秒级，不重建镜像、不动依赖、绝不误删模型；两端改动均入 git 可回滚。
-- B 改 `requirements.txt` → `deploy/rebuild-server.sh`：以 `server_latest` 为基座增量补装依赖，构建 `server_local`，改 override 的 `image` 并 `--force-recreate`；不重装系统依赖、不重灌模型。改依赖后照常 A 同步代码。
+- A 改 Python 代码 → `deploy/pull.sh`：本地 `git push` 后，server `git pull --ff-only` + `docker restart`，秒级，不重建镜像、不动依赖、绝不误删模型。单一源头、可回滚。
+- B 改 `requirements.txt` → `deploy/rebuild-server.sh`：server 先 `git pull`，再以 `server_latest` 为基座从 repo 的 requirements 增量补装依赖，构建 `server_local` 并 `--force-recreate`；不重装系统依赖、不重灌模型。
 - C 版本级发布 → `deploy/deploy.sh`：远程 compose 拉官方镜像、重启全模块。
 
 ## 资产边界（结论）
 - 代码：走热同步挂载。
 - 运行时资产（`models/` 里 VAD onnx、SenseVoice 配置、`music/`、pip 依赖）：留给镜像自带，不被 host shadow。
-- 大模型 `model.pt`(893M)：由 base compose 单独从 host 挂载。
+- 大模型 `model.pt`(893M)：由 base compose 从共享路径 `/data/models/SenseVoiceSmall/model.pt` 挂载（多服务可复用）。
 
 ## 外科式挂载清单
-override 只挂 6 个代码子路径，与 `sync-python.sh` 白名单**严格一一对应**（新增路径两处都要改）：
+override 只挂 6 个代码子路径（经 `src` 软链解析到 `repo/main/xiaozhi-server`）；新增需挂载的代码路径时，override 的 `volumes` 和 `repo/main/xiaozhi-server` 下都要有：
 `app.py`、`core/`、`plugins_func/`、`config/`、`agent-base-prompt.txt`、`mcp_server_settings.json`。
 
 ## rebuild-server.sh 实现要点
