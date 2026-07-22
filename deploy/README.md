@@ -21,35 +21,37 @@ GitHub origin(Smarking)   ←  唯一源头
 
 ## 目标机器
 - 火山 ECS(cn-shanghai)，公网 `118.196.120.182`，Ubuntu 24.04 x86_64，4C/8G。
-- 系统盘 `/dev/vda` 40G（docker 镜像/容器在此）；数据盘 `/dev/vdb` 10G 挂 `/data`（重资产）。
+- 系统盘 `/dev/vda` 40G（docker 镜像/容器 + 共享模型在此）；数据盘 `/dev/vdb` 10G 挂 `/data`（**仅用户产生的运行时数据**）。
 - 访问地址：智控台 `:8002`；设备 WS `ws://118.196.120.182:8000/xiaozhi/v1/`；OTA `http://118.196.120.182:8002/xiaozhi/ota/`。
 
 ## 目录布局（多服务就绪）
 
-每个服务一个自包含项目根；重资产走数据盘共享路径。
+每个服务一个自包含项目根（系统盘）；**共享模型放系统盘 `/srv/models/`**（多服务复用）；**数据盘 `/data/` 仅放用户产生的运行时数据**。完整约定见 server `/srv/README.md`。
 
 ```
-/srv/<service>/                  # 项目根（系统盘：compose + 代码 + 配置）
-  docker-compose_all.yml
-  docker-compose.override.yml
-  repo/                          # git clone origin（代码，小）
-  src -> repo/main/xiaozhi-server# 软链（外科式 bind-mount 用 ./src/...）
-  data/                          # 服务密钥（.config.yaml 等，小）
-  uploadfile/                    # web 上传
-
-/data/
-  models/                        # ★ 共享模型，所有服务可发现引用
+/srv/                            # 系统盘 — 服务根 + 共享资产
+  models/                        # ★ 共享模型（多服务复用）
     SenseVoiceSmall/model.pt     # 893M
-  <service>/                     # 服务私有重资产（数据盘）
+  <service>/                     # 项目根（compose + 代码 + 配置）
+    docker-compose_all.yml
+    docker-compose.override.yml
+    repo/                        # git clone origin（代码，小）
+    src -> repo/main/xiaozhi-server  # 软链（外科式 bind-mount 用 ./src/...）
+    data/                        # 服务密钥（.config.yaml 等，小）
+
+/data/                           # 数据盘 — 仅用户产生的运行时数据
+  <service>/
     xiaozhi-server/mysql/data/   # mysql
     xiaozhi-server/voice_sessions/
+    xiaozhi-server/uploadfile/   # web 上传
 ```
 
 xiaozhi 的 compose 挂载：
 - 代码：`./src/app.py`、`./src/core`、`./src/plugins_func`、`./src/config`、`./src/agent-base-prompt.txt`、`./src/mcp_server_settings.json`（经 src 软链解析到 repo）。
-- 模型：`/data/models/SenseVoiceSmall/model.pt`（共享）。
+- 模型：`/srv/models/SenseVoiceSmall/model.pt`（系统盘共享，多服务复用）。
 - mysql：`/data/xiaozhi-server/mysql/data`。
 - 语音数据集：`/data/xiaozhi-server/voice_sessions`。
+- 上传文件：`/data/xiaozhi-server/uploadfile`。
 - 配置：`./data`（含 `.config.yaml` 密钥）。
 
 > 外科式挂载原则不变：只挂会变的代码子路径，镜像自带的运行时资产（VAD onnx、SenseVoice 配置、`music/`、pip 依赖）永不被 host 目录 shadow。
@@ -63,7 +65,7 @@ git remote rename origin upstream              # 原 origin 是上游 xinnan-tec
 git remote add origin https://github.com/Smarking/xiaozhi-esp32-server.git
 git push -u origin main
 # 3. server 端建布局 + clone（见 DEPLOY-NOTES.md 的迁移记录）
-#    /srv/xiaozhi-server/repo = clone origin；src 软链；/data/models、/data/xiaozhi-server 放重资产
+#    /srv/xiaozhi-server/repo = clone origin；src 软链；/srv/models 放共享模型；/data/xiaozhi-server 放用户运行时数据
 ```
 
 ## 三种推送姿势

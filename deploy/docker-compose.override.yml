@@ -8,7 +8,7 @@
 #
 # src 为软链 -> repo/main/xiaozhi-server（git clone 自 origin/Smarking）。
 # 代码更新：git push origin main → deploy/pull.sh（server git pull + restart，秒级）。
-# 大模型 model.pt(893M) 由 base compose 从共享路径 /data/models 挂载。
+# 大模型 model.pt(893M) 由 base compose 从系统盘共享路径 /srv/models 挂载（多服务复用）。
 services:
   xiaozhi-esp32-server:
     # 指向 rebuild-server.sh 产出的本地镜像（基于 server_latest + requirements.txt）

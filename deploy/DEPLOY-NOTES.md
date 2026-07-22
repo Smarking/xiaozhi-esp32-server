@@ -4,9 +4,9 @@
 
 ## 环境事实
 - 目标机器：火山 ECS(cn-shanghai)，公网 `118.196.120.182`，Ubuntu 24.04 x86_64，4C/8G。
-- 磁盘：系统盘 `/dev/vda` 40G(清冗余后约 46%，docker 镜像/容器在此)；**数据盘 `/dev/vdb` 10G → ext4(label `xzdata`)挂 `/data`**(重资产)，fstab 用 UUID `0fbd3494-6e3e-4dc3-b735-9206cfa15210` + `noatime` 持久化。
-- **目录布局（多服务就绪，2026-07 重构）**：项目根 `/srv/<service>/`；共享模型 `/data/models/`；服务私有重资产 `/data/<service>/`。
-  - xiaozhi：`/srv/xiaozhi-server/`(compose + `repo/`(git clone origin) + `src→repo/main/xiaozhi-server` 软链 + `data/`密钥 + `uploadfile/`)；重资产在 `/data/xiaozhi-server/`(mysql、voice_sessions)、`/data/models/`(共享 model.pt)。
+- 磁盘：系统盘 `/dev/vda` 40G(清冗余后约 46%，docker 镜像/容器 + 共享模型在此)；**数据盘 `/dev/vdb` 10G → ext4(label `xzdata`)挂 `/data`**(仅用户产生的运行时数据)，fstab 用 UUID `0fbd3494-6e3e-4dc3-b735-9206cfa15210` + `noatime` 持久化。
+- **目录布局（多服务就绪，2026-07 重构）**：项目根 `/srv/<service>/`；**共享模型 `/srv/models/`(系统盘，多服务复用)**；**数据盘 `/data/<service>/` 仅放用户产生的运行时数据**(mysql、voice_sessions、uploadfile 等)。目录约定全文见 server `/srv/README.md`。
+  - xiaozhi：`/srv/xiaozhi-server/`(compose + `repo/`(git clone origin) + `src→repo/main/xiaozhi-server` 软链 + `data/`密钥)；用户数据在 `/data/xiaozhi-server/`(mysql、voice_sessions、uploadfile)；共享模型在 `/srv/models/SenseVoiceSmall/model.pt`。
 - **源码管理（2026-07 重构：rsync 双源头 → git 单一源头）**：唯一源头 = GitHub `origin`(`Smarking/xiaozhi-esp32-server`，你的 fork)，上游 `xinnan-tech` 降级为 `upstream`。server `/srv/xiaozhi-server/repo` 是 origin 的 checkout，`git pull` 更新。**不再有 rsync、不再有 server 端独立 git 仓**。
 - 部署形态：5 容器全链路——server(8000/8003)、web(manager-api+manager-web, 8002)、db(mysql)、redis、jaeger(可观测)；8000/8002/8003 公网可达已验证(HTTP 200/404)。
 - 访问地址：智控台 `:8002`；设备 WS `ws://.../xiaozhi/v1/`；OTA `http://.../xiaozhi/ota/`。
@@ -16,7 +16,7 @@
 - 容器通信：`data/.config.yaml` 的 `manager-api.url` 必须用内部容器名 `http://xiaozhi-esp32-server-web:8002/xiaozhi`，不能用 127.0.0.1。
 - 挂载：禁止挂整个 `./src` 到容器工作目录，必须外科式挂载代码子路径（经 `src→repo/main/xiaozhi-server` 软链），保护镜像内置 `models/` 资产。
 - 版本管理：`/srv/xiaozhi-server/repo` 是 origin(Smarking) 的标准 git checkout，`.git` 在工作区内；唯一源头是 GitHub，server 只 pull 不自定义提交。
-- 数据盘边界：`/data` 是持久数据盘(共享模型 `/data/models`、各服务重资产 `/data/<service>/`)，**不随容器/镜像生命周期**；`/srv/xiaozhi-server/src` 软链指向 `repo/main/xiaozhi-server`，动软链前必须先停容器并确认路径解析。
+- 数据盘边界：`/data` 是持久数据盘，**仅放用户产生的运行时数据**(各服务 `/data/<service>/` 下的 mysql/voice_sessions/uploadfile 等)，**不放代码、不放模型权重、不放 git 仓**，不随容器/镜像生命周期；共享模型在系统盘 `/srv/models/`；`/srv/xiaozhi-server/src` 软链指向 `repo/main/xiaozhi-server`，动软链前必须先停容器并确认路径解析。
 
 ## 源码纪律（2026-07 重构：rsync 双源头 → git 单一源头）
 - **演进**：①「本地=唯一源头，ECS=纯运行时」rsync 覆盖(无历史) → ②「服务端 `/data/xiaozhi-src` 一等 git 源头」rsync+快照(双源头仍发散) → ③**当前：GitHub origin(Smarking) 唯一源头，两端都从它拉取**。
@@ -37,7 +37,7 @@
 ## 资产边界（结论）
 - 代码：走热同步挂载。
 - 运行时资产（`models/` 里 VAD onnx、SenseVoice 配置、`music/`、pip 依赖）：留给镜像自带，不被 host shadow。
-- 大模型 `model.pt`(893M)：由 base compose 从共享路径 `/data/models/SenseVoiceSmall/model.pt` 挂载（多服务可复用）。
+- 大模型 `model.pt`(893M)：由 base compose 从系统盘共享路径 `/srv/models/SenseVoiceSmall/model.pt` 挂载（多服务可复用，不放数据盘）。
 
 ## 外科式挂载清单
 override 只挂 6 个代码子路径（经 `src` 软链解析到 `repo/main/xiaozhi-server`）；新增需挂载的代码路径时，override 的 `volumes` 和 `repo/main/xiaozhi-server` 下都要有：
